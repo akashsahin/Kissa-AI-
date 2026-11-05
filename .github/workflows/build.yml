@@ -7,9 +7,6 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     name: Build Signed Release APK & Bundle
@@ -31,28 +28,27 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Ensure Executable Permissions
+      - name: Accept Android SDK Licenses
         run: |
-          chmod +x gradlew || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Prepare environment file
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env 2>/dev/null || touch .env
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
       - name: Build Release APK
-        run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew assembleRelease --stacktrace
-          else
-            gradle assembleRelease --stacktrace
-          fi
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Build Release Android App Bundle (AAB for Play Store)
-        run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew bundleRelease --stacktrace
-          else
-            gradle bundleRelease --stacktrace
-          fi
+      - name: Build Release AAB (Google Play Store Bundle)
+        run: ./gradlew bundleRelease --no-daemon --stacktrace
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
@@ -60,10 +56,12 @@ jobs:
           name: Kissa-AI-Release-APK
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
+          if-no-files-found: error
 
-      - name: Upload Release AAB (Google Play Bundle)
+      - name: Upload Release AAB (Google Play)
         uses: actions/upload-artifact@v4
         with:
           name: Kissa-AI-Release-AAB
           path: app/build/outputs/bundle/release/*.aab
           retention-days: 30
+          if-no-files-found: error
