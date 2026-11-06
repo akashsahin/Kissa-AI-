@@ -55,6 +55,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.auth.GoogleAuthManager
+import com.example.config.AppConfig
 
 private const val TAG = "KissaWebView"
 
@@ -78,14 +79,19 @@ class AndroidNativeInterface(
     @JavascriptInterface
     fun signInWithGoogle(serverClientId: String?) {
         activity.runOnUiThread {
+            val effectiveClientId = if (!serverClientId.isNullOrBlank()) {
+                serverClientId
+            } else {
+                AppConfig.GOOGLE_WEB_CLIENT_ID
+            }
+
             GoogleAuthManager.signInWithGoogle(
                 activity = activity,
-                serverClientId = serverClientId ?: "",
+                serverClientId = effectiveClientId,
                 fallbackAuthUrl = null,
                 onSuccess = { idToken ->
-                    // Notify webpage of successful token
                     webViewProvider()?.evaluateJavascript(
-                        "if (window.onGoogleSignInSuccess) { window.onGoogleSignInSuccess('$idToken'); }",
+                        "if (window.onGoogleSignInSuccess) { window.onGoogleSignInSuccess('$idToken'); } else if (window.handleCredentialResponse) { window.handleCredentialResponse({credential: '$idToken'}); }",
                         null
                     )
                 },
@@ -143,6 +149,20 @@ fun KissaWebView(
             filePathCallback?.onReceiveValue(null)
         }
         filePathCallback = null
+    }
+
+    // Dedicated Activity Result Launcher for UPI Payments (PhonePe, BHIM, GPay, Paytm, CRED, etc.)
+    // Keeps calling activity linkage alive so PhonePe and BHIM do NOT close instantly!
+    val upiPaymentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val response = result.data?.getStringExtra("response") ?: ""
+        Log.d(TAG, "UPI Payment returned: resultCode=${result.resultCode}, response=$response")
+        // Refocus webview and trigger Razorpay polling check
+        webViewInstance?.evaluateJavascript(
+            "window.focus(); if (window.onUpiPaymentCompleted) { window.onUpiPaymentCompleted('$response'); }",
+            null
+        )
     }
 
     // Android back navigation handler
@@ -309,7 +329,13 @@ fun KissaWebView(
                                     webViewClient = object : WebViewClient() {
                                         override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
                                             val popupUrl = req?.url?.toString() ?: return false
-                                            return handlePaymentAndAuthSchemes(ctx, view, popupUrl)
+                                            return handlePaymentAndAuthSchemes(
+                                                ctx = ctx,
+                                                activity = activity,
+                                                view = view,
+                                                url = popupUrl,
+                                                launchUpiIntent = { intent -> upiPaymentLauncher.launch(intent) }
+                                            )
                                         }
                                     }
                                 }
@@ -354,7 +380,13 @@ fun KissaWebView(
                                 request: WebResourceRequest?
                             ): Boolean {
                                 val requestUrl = request?.url?.toString() ?: return false
-                                return handlePaymentAndAuthSchemes(ctx, view, requestUrl)
+                                return handlePaymentAndAuthSchemes(
+                                    ctx = ctx,
+                                    activity = activity,
+                                    view = view,
+                                    url = requestUrl,
+                                    launchUpiIntent = { intent -> upiPaymentLauncher.launch(intent) }
+                                )
                             }
                         }
 
@@ -400,93 +432,175 @@ fun KissaWebView(
 }
 
 /**
- * Intercepts payment schemes (UPI, GPay, PhonePe, Paytm, CRED) and Google OAuth URLs.
- * Returns true if the URL was handled natively, false if the WebView should proceed.
+ * Intercepts payment schemes (UPI, GPay, PhonePe, Paytm, BHIM, CRED, Navi, etc.)
+ * and Google OAuth URLs.
+ * 
+ * 1. Google Auth: Trigger Native Credential Manager 2.0 FIRST. If failed/cancelled, fallback to Custom Chrome Tab.
+ * 2. UPI Payments: Launch via ActivityResult without FLAG_ACTIVITY_NEW_TASK so PhonePe and BHIM do NOT close instantly!
  */
 private fun handlePaymentAndAuthSchemes(
     ctx: Context,
+    activity: Activity?,
     view: WebView?,
-    url: String
+    url: String,
+    launchUpiIntent: (Intent) -> Unit
 ): Boolean {
-    // 1. Google OAuth Interceptor: Open in Chrome Custom Tab to prevent 403 disallowed_useragent
+    // 1. Google OAuth Interceptor: Trigger Native Credential Manager 2.0 FIRST!
     if (url.contains("accounts.google.com") || url.contains("apis.google.com/signin")) {
-        GoogleAuthManager.openChromeCustomTab(ctx, url)
-        return true
+        val uri = Uri.parse(url)
+        val extractedClientId = uri.getQueryParameter("client_id")
+        val effectiveClientId = if (!extractedClientId.isNullOrBlank()) {
+            extractedClientId
+        } else {
+            AppConfig.GOOGLE_WEB_CLIENT_ID
+        }
+
+        if (activity != null && effectiveClientId.isNotBlank()) {
+            Log.d(TAG, "Triggering Native Credential Manager 2.0 first for Google Sign-In (Client ID: $effectiveClientId)")
+            GoogleAuthManager.signInWithGoogle(
+                activity = activity,
+                serverClientId = effectiveClientId,
+                fallbackAuthUrl = url,
+                onSuccess = { idToken ->
+                    val redirectUri = uri.getQueryParameter("redirect_uri")
+                    if (!redirectUri.isNullOrBlank()) {
+                        val finalUrl = if (redirectUri.contains("?")) {
+                            "$redirectUri&id_token=$idToken&credential=$idToken"
+                        } else {
+                            "$redirectUri?id_token=$idToken&credential=$idToken"
+                        }
+                        view?.loadUrl(finalUrl)
+                    } else {
+                        view?.evaluateJavascript(
+                            "if (window.onGoogleSignInSuccess) { window.onGoogleSignInSuccess('$idToken'); } else if (window.handleCredentialResponse) { window.handleCredentialResponse({credential: '$idToken'}); }",
+                            null
+                        )
+                    }
+                },
+                onError = { error ->
+                    Log.w(TAG, "Native Credential Manager failed ($error). Opening Chrome Custom Tab fallback.")
+                    GoogleAuthManager.openChromeCustomTab(ctx, url)
+                }
+            )
+            return true
+        } else {
+            // If client id cannot be determined, directly open Chrome Custom Tab
+            GoogleAuthManager.openChromeCustomTab(ctx, url)
+            return true
+        }
     }
 
-    // 2. Razorpay & UPI Payment Apps Interceptor (upi, gpay, phonepe, paytm, bhim, cred, etc.)
-    val isUpiScheme = url.startsWith("upi://") ||
-            url.startsWith("phonepe://") ||
+    // 2. Comprehensive Indian UPI Payment Apps Interceptor
+    // Support all known scheme prefixes
+    val isDirectUpi = url.startsWith("upi://")
+    val isIntentUpi = url.startsWith("intent://")
+    val isAppCustomUpi = url.startsWith("phonepe://") ||
             url.startsWith("gpay://") ||
             url.startsWith("paytmmp://") ||
             url.startsWith("bhim://") ||
             url.startsWith("credpay://") ||
-            url.startsWith("mobikwik://")
+            url.startsWith("amazonpay://") ||
+            url.startsWith("mobikwik://") ||
+            url.startsWith("navi://") ||
+            url.startsWith("jupiter://") ||
+            url.startsWith("fi://") ||
+            url.startsWith("slice://") ||
+            url.startsWith("tataneu://")
 
-    if (isUpiScheme) {
-        return try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            val chooser = Intent.createChooser(intent, "Pay using UPI App").apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            ctx.startActivity(chooser)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "No UPI app could handle the scheme: $url", e)
-            Toast.makeText(ctx, "No compatible UPI app found", Toast.LENGTH_SHORT).show()
-            true
-        }
-    }
+    if (isDirectUpi || isIntentUpi || isAppCustomUpi) {
+        try {
+            var intent: Intent? = null
 
-    // 3. Android Intent scheme (e.g. intent://upi/pay?pa=...#Intent;scheme=upi;package=...;end)
-    if (url.startsWith("intent://")) {
-        return try {
-            val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            val packageManager = ctx.packageManager
-            if (packageManager.resolveActivity(intent, 0) != null) {
-                ctx.startActivity(intent)
-                true
-            } else {
-                // If specific package not installed, check for browser_fallback_url
-                val fallbackUrl = intent.getStringExtra("browser_fallback_url")
-                if (!fallbackUrl.isNullOrBlank()) {
-                    view?.loadUrl(fallbackUrl)
-                    true
+            if (isIntentUpi) {
+                // Parse intent:// URI generated by Razorpay
+                val parsed = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                // Remove FLAG_ACTIVITY_NEW_TASK so PhonePe / BHIM gets the calling activity result contract!
+                parsed.flags = parsed.flags and Intent.FLAG_ACTIVITY_NEW_TASK.inv()
+                intent = parsed
+            } else if (isAppCustomUpi) {
+                // Map app-specific custom schemes to official NPCI upi://pay protocol with package target
+                val standardUpiUri = if (url.contains("?")) {
+                    "upi://pay?" + url.substringAfter("?")
                 } else {
-                    // Try generic upi data if available
-                    val dataString = intent.dataString
-                    if (dataString != null && dataString.startsWith("upi://")) {
-                        val genericIntent = Intent(Intent.ACTION_VIEW, Uri.parse(dataString)).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        val chooser = Intent.createChooser(genericIntent, "Pay using UPI").apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        ctx.startActivity(chooser)
-                        true
+                    url
+                }
+                val mappedPackage = when {
+                    url.startsWith("phonepe://") -> "com.phonepe.app"
+                    url.startsWith("gpay://") -> "com.google.android.apps.nbu.paisa.user"
+                    url.startsWith("paytmmp://") -> "net.one97.paytm"
+                    url.startsWith("bhim://") -> "in.org.npci.upiapp"
+                    url.startsWith("credpay://") -> "com.dreamplug.androidapp"
+                    url.startsWith("amazonpay://") -> "in.amazon.mShop.android.shopping"
+                    url.startsWith("mobikwik://") -> "com.mobikwik_new"
+                    url.startsWith("navi://") -> "com.navi.finance"
+                    url.startsWith("jupiter://") -> "com.jupiter.money"
+                    url.startsWith("fi://") -> "money.fi.app"
+                    url.startsWith("slice://") -> "indwin.c3.shareapp"
+                    url.startsWith("tataneu://") -> "com.tatadigital.tcp"
+                    else -> null
+                }
+
+                val directIntent = Intent(Intent.ACTION_VIEW, Uri.parse(standardUpiUri))
+                if (mappedPackage != null && isPackageInstalled(ctx, mappedPackage)) {
+                    directIntent.setPackage(mappedPackage)
+                }
+                intent = directIntent
+            } else {
+                // Generic upi://pay?...
+                intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            }
+
+            if (intent != null) {
+                // Check if target package is specified and installed
+                val targetPackage = intent.`package`
+                if (targetPackage != null && !isPackageInstalled(ctx, targetPackage)) {
+                    // Target package not installed; remove package lock to allow any installed UPI app to handle it!
+                    intent.setPackage(null)
+                }
+
+                // Check if any app on the device can handle this intent
+                val packageManager = ctx.packageManager
+                val resolveInfo = packageManager.resolveActivity(intent, 0)
+
+                if (resolveInfo != null) {
+                    // Launch directly via ActivityResultLauncher WITHOUT FLAG_ACTIVITY_NEW_TASK!
+                    // This keeps the caller-callee link intact, preventing PhonePe & BHIM from instantly closing!
+                    launchUpiIntent(intent)
+                    return true
+                } else {
+                    // If unresolved, try checking for browser fallback url
+                    val fallbackUrl = intent.getStringExtra("browser_fallback_url")
+                    if (!fallbackUrl.isNullOrBlank()) {
+                        view?.loadUrl(fallbackUrl)
+                        return true
+                    }
+
+                    // Try generic UPI chooser
+                    val dataUri = intent.data ?: Uri.parse(url)
+                    val genericUpiIntent = Intent(Intent.ACTION_VIEW, dataUri)
+                    if (packageManager.resolveActivity(genericUpiIntent, 0) != null) {
+                        val chooser = Intent.createChooser(genericUpiIntent, "Pay with UPI")
+                        launchUpiIntent(chooser)
+                        return true
                     } else {
-                        false
+                        Toast.makeText(ctx, "No UPI payment app found on your phone", Toast.LENGTH_LONG).show()
+                        return true
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse intent URL: $url", e)
-            false
+            Log.e(TAG, "Error handling UPI intent for $url: ${e.message}", e)
+            Toast.makeText(ctx, "Could not open UPI app: ${e.message}", Toast.LENGTH_SHORT).show()
+            return true
         }
     }
 
-    // 4. Other external non-http schemes (mailto, tel, whatsapp, sms)
+    // 3. Other external non-http schemes (mailto, tel, whatsapp, sms)
     val uri = Uri.parse(url)
     val scheme = uri.scheme ?: ""
     if (scheme != "http" && scheme != "https") {
         return try {
-            val externalIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
+            val externalIntent = Intent(Intent.ACTION_VIEW, uri)
             ctx.startActivity(externalIntent)
             true
         } catch (e: Exception) {
@@ -497,4 +611,13 @@ private fun handlePaymentAndAuthSchemes(
 
     // Default: Load inside the WebView
     return false
+}
+
+private fun isPackageInstalled(context: Context, packageName: String): Boolean {
+    return try {
+        context.packageManager.getPackageInfo(packageName, 0)
+        true
+    } catch (_: Exception) {
+        false
+    }
 }

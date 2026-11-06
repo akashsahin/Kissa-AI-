@@ -31,4 +31,10 @@ object AppConfig {
         "kissaai.pages.dev",
         "pages.dev"
     )
+
+    /**
+     * Google Web Client ID for native Jetpack Credential Manager 2.0.
+     * If empty, the app will automatically extract client_id from the website's Google Sign-In request.
+     */
+    var GOOGLE_WEB_CLIENT_ID: String = ""
 }

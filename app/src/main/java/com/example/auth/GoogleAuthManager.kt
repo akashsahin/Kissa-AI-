@@ -58,7 +58,13 @@ object GoogleAuthManager {
         onSuccess: (idToken: String) -> Unit,
         onError: (message: String) -> Unit
     ) {
-        if (serverClientId.isBlank()) {
+        val effectiveClientId = if (serverClientId.isNotBlank()) {
+            serverClientId
+        } else {
+            com.example.config.AppConfig.GOOGLE_WEB_CLIENT_ID
+        }
+
+        if (effectiveClientId.isBlank()) {
             // If client id not yet configured, immediately fallback to Chrome Custom Tab
             fallbackAuthUrl?.let { openChromeCustomTab(activity, it) }
             onError("Google Server Client ID is not configured yet. Fallback to Custom Tab.")
@@ -69,7 +75,7 @@ object GoogleAuthManager {
 
         val googleIdOption = GetGoogleIdOption.Builder()
             .setFilterByAuthorizedAccounts(false)
-            .setServerClientId(serverClientId)
+            .setServerClientId(effectiveClientId)
             .setAutoSelectEnabled(true)
             .build()
 

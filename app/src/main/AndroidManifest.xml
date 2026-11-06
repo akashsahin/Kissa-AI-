@@ -10,22 +10,45 @@
 
     <!-- Queries required for UPI apps and Custom Tabs visibility on Android 11+ -->
     <queries>
-        <!-- Generic UPI payment scheme -->
+        <!-- Generic UPI payment schemes -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
-        <!-- Popular Indian UPI app packages for Razorpay detection -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" android:host="pay" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" android:host="mandate" />
+        </intent>
+
+        <!-- Comprehensive Indian UPI apps for direct intent routing & Razorpay detection -->
         <package android:name="com.google.android.apps.nbu.paisa.user" /> <!-- Google Pay -->
         <package android:name="com.phonepe.app" /> <!-- PhonePe -->
         <package android:name="net.one97.paytm" /> <!-- Paytm -->
-        <package android:name="in.org.npci.upiapp" /> <!-- BHIM -->
+        <package android:name="in.org.npci.upiapp" /> <!-- BHIM UPI -->
+        <package android:name="com.dreamplug.androidapp" /> <!-- CRED -->
         <package android:name="in.amazon.mShop.android.shopping" /> <!-- Amazon Pay -->
         <package android:name="com.whatsapp" /> <!-- WhatsApp Pay -->
-        <package android:name="com.dreamplug.androidapp" /> <!-- CRED -->
         <package android:name="com.myairtelapp" /> <!-- Airtel Thanks -->
         <package android:name="com.mobikwik_new" /> <!-- MobiKwik -->
         <package android:name="com.freecharge.android" /> <!-- Freecharge -->
+        <package android:name="com.msf.kbank.mobile" /> <!-- Kotak Mobile -->
+        <package android:name="com.sbi.upi" /> <!-- SBI Pay -->
+        <package android:name="com.csam.icici.bank.imobile" /> <!-- iMobile ICICI -->
+        <package android:name="com.hdfcbank.payzapp" /> <!-- PayZapp HDFC -->
+        <package android:name="com.axis.mobile" /> <!-- Axis Mobile -->
+        <package android:name="com.bankofbaroda.upi" /> <!-- Baroda Pay -->
+        <package android:name="com.canarabank.mobility" /> <!-- Canara ai1 -->
+        <package android:name="com.navi.finance" /> <!-- Navi -->
+        <package android:name="com.jupiter.money" /> <!-- Jupiter -->
+        <package android:name="money.fi.app" /> <!-- Fi Money -->
+        <package android:name="indwin.c3.shareapp" /> <!-- Slice -->
+        <package android:name="com.tatadigital.tcp" /> <!-- Tata Neu -->
+        <package android:name="com.supermoney.app" /> <!-- Super.money -->
+
         <!-- Browser intent for Chrome Custom Tabs -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
