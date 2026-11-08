@@ -21,16 +21,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Accept Android SDK Licenses
+      - name: Setup Android SDK Platforms
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
 
       - name: Prepare environment file
         run: |
@@ -53,7 +54,11 @@ jobs:
 
       - name: Build Release APK & Bundle
         run: |
-          ./gradlew assembleRelease bundleRelease --stacktrace
+          ./gradlew assembleRelease bundleRelease --stacktrace --no-daemon || {
+            echo "First attempt encountered network glitch. Retrying release build..."
+            sleep 5
+            ./gradlew assembleRelease bundleRelease --stacktrace --no-daemon
+          }
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
