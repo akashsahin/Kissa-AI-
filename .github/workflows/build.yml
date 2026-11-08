@@ -26,11 +26,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - name: Setup Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
+          cache: 'gradle'
 
       - name: Accept Android SDK Licenses
         run: |
@@ -45,9 +41,19 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew || true
 
-      - name: Build Release APK & AAB Bundle
+      - name: Verify Gradle Wrapper & Build Environment
         run: |
-          gradle assembleRelease bundleRelease --no-daemon --stacktrace
+          chmod +x gradlew
+          echo "Verifying Gradle wrapper..."
+          if ! ./gradlew --version; then
+            echo "Direct download timed out. Switching to Tencent Cloud mirror..."
+            sed -i 's|distributionUrl=.*|distributionUrl=https\\://mirrors.cloud.tencent.com/gradle/gradle-9.3.1-bin.zip|' gradle/wrapper/gradle-wrapper.properties
+            ./gradlew --version
+          fi
+
+      - name: Build Release APK & Bundle
+        run: |
+          ./gradlew assembleRelease bundleRelease --stacktrace
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
